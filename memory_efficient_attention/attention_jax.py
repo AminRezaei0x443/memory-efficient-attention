@@ -5,7 +5,7 @@ import math
 from jax import numpy as jnp
 
 
-def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_size=4096):
+def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_size=4096, return_attentions=False):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
@@ -27,7 +27,7 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
         exp_weights = jnp.exp(attn_weights - max_score)
         exp_values = jnp.einsum('...vhf,...qhv->...qhf', value, exp_weights, precision=precision)
         max_score = jnp.einsum('...qhk->...qh', max_score)
-        return exp_values, exp_weights.sum(axis=-1), max_score
+        return exp_values, exp_weights, exp_weights.sum(axis=-1), max_score
 
     def chunk_scanner(chunk_idx):
         key_chunk = jax.lax.dynamic_slice(
@@ -50,7 +50,7 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
             mask_chunk = None
         return summarize_chunk(query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
-    chunk_values, chunk_weights, chunk_max = jax.lax.map(
+    chunk_values, chunk_attentions, chunk_weights, chunk_max = jax.lax.map(
         chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size))
 
     global_max = jnp.max(chunk_max, axis=0, keepdims=True)
@@ -60,14 +60,19 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
 
     all_values = chunk_values.sum(axis=0)
     all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
-    return all_values / all_weights
+    if return_attentions:
+        all_attentions = jnp.concatenate(chunk_attentions, axis=-1) / all_weights
+    else:
+        all_attentions = None
+    return all_values / all_weights, all_attentions
 
 
 def efficient_dot_product_attention(query, key, value,
                                     mask=None, bias=None,
                                     precision=jax.lax.Precision.HIGHEST,
                                     query_chunk_size=1024,
-                                    key_chunk_size=4096):
+                                    key_chunk_size=4096,
+                                    return_attentions=False):
     """Computes efficient dot-product attention given query, key, and value.
       This is efficient version of attention presented in
       https://arxiv.org/abs/2112.05682v2 which comes with O(sqrt(n)) memory requirements.
@@ -92,6 +97,7 @@ def efficient_dot_product_attention(query, key, value,
         key_chunk_size: int: key chunks size
         precision: numerical precision of the computation see `jax.lax.Precision`
                 for details.
+        return_attentions: If specified, a tuple of (output, weights) will be returned.
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """
@@ -114,10 +120,17 @@ def efficient_dot_product_attention(query, key, value,
                 slice_sizes=tuple(bias.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
         else:
             bias_chunk = None
-        return (chunk_idx + query_chunk_size,
-                _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
-                                       precision=precision, key_chunk_size=key_chunk_size))
+
+        out, attn_chunk = _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
+                                                 precision=precision, key_chunk_size=key_chunk_size, return_attentions=return_attentions)
+        if return_attentions:
+            out = (out, attn_chunk)
+
+        return (chunk_idx + query_chunk_size, out)
 
     _, res = jax.lax.scan(
         chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
-    return jnp.concatenate(res, axis=-3)
+    if return_attentions:
+        return jnp.concatenate(res[0], axis=-3), jnp.concatenate(res[1], axis=-3)
+    else:
+        return jnp.concatenate(res, axis=-3)

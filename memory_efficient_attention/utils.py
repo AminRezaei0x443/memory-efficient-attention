@@ -5,9 +5,8 @@ import numpy as np
 def dynamic_slice(x, starts, sizes):
     # start_indices[i] = clamp(start_indices[i], 0, operand.dimension_size[i] - size_indices[i])
     starts = [np.clip(starts[i], 0, x.shape[i] - sizes[i]) for i in range(len(starts))]
-    for i, (start, size) in enumerate(zip(starts, sizes)):
-        x = torch.index_select(x, i, torch.tensor(range(start, start + size)))
-    return x
+    indices = [slice(start, start + size) for start, size in zip(starts, sizes)]
+    return x[indices]
 
 
 def map_pt(f, xs):
@@ -19,8 +18,17 @@ def scan(f, init, xs, length=None):
     if xs is None:
         xs = [None] * length
     carry = init
-    ys = []
-    for x in xs:
-        carry, y = f(carry, x)
-        ys.append(y)
-    return carry, torch.stack(ys)
+    carry, y = f(carry, xs[0])
+    if type(y) is tuple:
+        ys = tuple(([y_] for y_ in y))
+        for x in xs[1:]:
+            carry, y = f(carry, x)
+            for ys_, y_ in zip(ys, y):
+                ys_.append(y_)
+        return carry, tuple((torch.stack(ys_) for ys_ in ys))
+    else:
+        ys = [y]
+        for x in xs[1:]:
+            carry, y = f(carry, x)
+            ys.append(y)
+        return carry, torch.stack(ys)

@@ -4,7 +4,7 @@ from .utils import dynamic_slice, map_pt, scan
 import math
 
 
-def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096):
+def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096, return_attentions=False):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
@@ -26,7 +26,7 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096):
         exp_weights = torch.exp(attn_weights - max_score)
         exp_values = torch.einsum('...vhf,...qhv->...qhf', value, exp_weights)
         max_score = torch.einsum('...qhk->...qh', max_score)
-        return exp_values, exp_weights.sum(dim=-1), max_score
+        return exp_values, exp_weights, exp_weights.sum(dim=-1), max_score
 
     def chunk_scanner(chunk_idx):
         key_chunk = dynamic_slice(key, tuple([0] * (key.ndim - 3)) + (chunk_idx, 0, 0),
@@ -45,7 +45,7 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096):
             mask_chunk = None
         return checkpoint(summarize_chunk, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
-    chunk_values, chunk_weights, chunk_max = map_pt(
+    chunk_values, chunk_attentions, chunk_weights, chunk_max = map_pt(
         chunk_scanner, xs=torch.arange(0, num_kv, key_chunk_size))
 
     global_max, _ = torch.max(chunk_max, 0, keepdim=True)
@@ -55,13 +55,18 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096):
 
     all_values = chunk_values.sum(dim=0)
     all_weights = torch.unsqueeze(chunk_weights, -1).sum(dim=0)
-    return all_values / all_weights
+    if return_attentions:
+        all_attentions = torch.cat(tuple(chunk_attentions), dim=-1) / all_weights
+    else:
+        all_attentions = None
+    return all_values / all_weights, all_attentions
 
 
 def efficient_dot_product_attention(query, key, value,
                                     mask=None, bias=None,
                                     query_chunk_size=1024,
-                                    key_chunk_size=4096):
+                                    key_chunk_size=4096,
+                                    return_attentions=False):
     """Computes efficient dot-product attention given query, key, and value.
       This is efficient version of attention presented in
       https://arxiv.org/abs/2112.05682v2 which comes with O(sqrt(n)) memory requirements.
@@ -84,6 +89,7 @@ def efficient_dot_product_attention(query, key, value,
           is `False`.
         query_chunk_size: int: query chunks size
         key_chunk_size: int: key chunks size
+        return_attentions: If specified, a tuple of (output, weights) will be returned.
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """
@@ -104,9 +110,13 @@ def efficient_dot_product_attention(query, key, value,
                                        tuple(bias.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
         else:
             bias_chunk = None
-        return (chunk_idx + query_chunk_size,
-                _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk, key_chunk_size=key_chunk_size))
+        out, attn_chunk = _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk, key_chunk_size=key_chunk_size, return_attentions=return_attentions)
+        if return_attentions:
+            out = (out, attn_chunk)
+        return (chunk_idx + query_chunk_size, out)
 
     _, res = scan(chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
-    rl = [res[i] for i in range(res.shape[0])]
-    return torch.cat(rl, dim=-3)
+    if return_attentions:
+        return torch.cat(list(res[0]), dim=-3), torch.cat(list(res[1]), dim=-3)
+    else:
+        return torch.cat(list(res), dim=-3)
