@@ -44,22 +44,27 @@ def _query_chunk_attention(query_idx, query, key, value,
                                   tuple(key.shape[:-3]) + (key_chunk_size, num_heads, k_features))
         value_chunk = dynamic_slice(value, tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(value.shape[:-3]) + (key_chunk_size, num_heads, v_features))
-        if bias is not None:
-            if bias.shape[-1] > 1:
-                bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
-                                           tuple(bias.shape[:-3]) + (bias.shape[-3], bias.shape[-2], key_chunk_size))
-            else:
-                bias_chunk = bias
-        else:
+
+        if bias is None:
             bias_chunk = None
-        if mask is not None:
-            if mask.shape[-1] > 1:
-                mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
-                                           tuple(mask.shape[:-3]) + (mask.shape[-3], mask.shape[-2], key_chunk_size))
-            else:
-                mask_chunk = mask
+        elif bias.shape[-1] == 1:
+            bias_chunk = bias
+        elif bias.shape[-1] == num_kv:
+            bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
+                                       tuple(bias.shape[:-3]) + (bias.shape[-3], bias.shape[-2], key_chunk_size))
         else:
+            raise TypeError(f'bias.shape[-1] == {bias.shape[-1]} must broadcast with key.shape[-3] == {num_kv}')
+
+        if mask is None:
             mask_chunk = None
+        elif mask.shape[-1] == 1:
+            mask_chunk = mask
+        elif mask.shape[-1] == num_kv:
+            mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
+                                       tuple(mask.shape[:-3]) + (mask.shape[-3], mask.shape[-2], key_chunk_size))
+        else:
+            raise TypeError(f'bias.shape[-1] == {bias.shape[-1]} must broadcast with key.shape[-3] == {num_kv}')
+
         return checkpoint(summarize_chunk, chunk_idx, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
     chunk_values, chunk_weights, chunk_max = map_pt(
@@ -131,22 +136,26 @@ def efficient_dot_product_attention(query, key, value,
         print(chunk_idx)
         query_chunk = dynamic_slice(query, tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(query.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, q_features))
-        if mask is not None:
-            if mask.shape[-2] > 1:
-                mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
-                                           tuple(mask.shape[:-3]) + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]))
-            else:
-                mask_chunk = mask
-        else:
+
+        if mask is None:
             mask_chunk = None
-        if bias is not None:
-            if bias.shape[-2] > 1:
-                bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
-                                           tuple(bias.shape[:-3]) + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]))
-            else:
-                bias_chunk = bias
+        elif mask.shape[-2] == 1:
+            mask_chunk = mask
+        elif mask.shape[-2] == num_q:
+            mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
+                                       tuple(mask.shape[:-3]) + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]))
         else:
+            raise TypeError(f'mask.shape[-2] == {mask.shape[-2]} must broadcast with query.shape[-3] == {num_q}')
+
+        if bias is None:
             bias_chunk = None
+        elif bias.shape[-2] == 1:
+            bias_chunk = bias
+        elif bias.shape[-2] == num_q:
+            bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
+                                       tuple(bias.shape[:-3]) + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]))
+        else:
+            raise TypeError(f'bias.shape[-2] == {bias.shape[-2]} must broadcast with query.shape[-3] == {num_q}')
         return (chunk_idx + query_chunk_size,
                 _query_chunk_attention(chunk_idx, query_chunk, key, value, mask_chunk, bias_chunk, key_chunk_size=key_chunk_size,
                                        bias_calc_fn=bias_calc_fn, mask_calc_fn=mask_calc_fn,
