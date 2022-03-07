@@ -1,6 +1,6 @@
 # Memory Efficient Attention
 [![arXiv](https://img.shields.io/badge/arXiv-2112.05682v2-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2112.05682v2)
-[![PyPI version](https://img.shields.io/badge/memory--efficient--attention-0.1.1-informational?style=flat-square&color=C51BA3)](https://pypi.org/project/memory-efficient-attention/)
+[![PyPI version](https://img.shields.io/badge/memory--efficient--attention-0.1.2-informational?style=flat-square&color=C51BA3)](https://pypi.org/project/memory-efficient-attention/)
 
 This is **unofficial** implementation of [Self-attention Does Not Need O(n^2) Memory](https://arxiv.org/abs/2112.05682v2) for Jax and PyTorch.
 
