@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='memory-efficient-attention',
-    version='0.1.1',
+    version='0.1.2',
     description='Memory Efficient Attention (O(sqrt(n)) for Jax and PyTorch',
     license='MIT',
     packages=find_packages(),
