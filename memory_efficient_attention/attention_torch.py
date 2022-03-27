@@ -27,7 +27,7 @@ def _query_chunk_attention(query_idx, query, key, value,
             mask = mask_calc_fn(query_idx, key_idx, mask, attn_weights, calc_fn_data)
         if mask is not None:
             big_neg = torch.finfo(attn_weights.dtype).min
-            big_neg = torch.tensor(big_neg, , device=mask.device, dtype=torch.float32)
+            big_neg = torch.tensor(big_neg, device=mask.device, dtype=torch.float32)
             mask = torch.einsum('...hqk->...qhk', mask)
             attn_weights = torch.where(mask, attn_weights, big_neg)
         if weights_calc_fn is not None:
@@ -133,7 +133,6 @@ def efficient_dot_product_attention(query, key, value,
     num_kv = key.shape[-3]
 
     def chunk_scanner(chunk_idx, _):
-        print(chunk_idx)
         query_chunk = dynamic_slice(query, tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(query.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, q_features))
 
